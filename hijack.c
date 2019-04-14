@@ -3,19 +3,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
+#include <unistd.h>
+
 #include <sys/ptrace.h>
 #include <sys/types.h>
+#include <sys/user.h>
 #include <sys/wait.h>
-#include <unistd.h>
+
+#define ASSERT(expr) \
+	if (expr == -1) { \
+		perror(#expr); \
+		return EX_OSERR; \
+	}
 
 /**
  * Executes a `file` with `arguments`, with a `PTRACE_TRACEME` request.
  */
 int run(char* file, char** arguments) {
-	if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) == -1) {
-		perror("ptrace");
-		return EX_OSERR;
-	}
+	ASSERT(ptrace(PTRACE_TRACEME, 0, NULL, NULL));
 	if (execvp(file, arguments)) {
 		perror(file);
 		return EX_NOINPUT;
@@ -23,27 +28,29 @@ int run(char* file, char** arguments) {
 	return 0;
 }
 
+void print_syscall(struct user_regs_struct regs) {
+	printf("Syscall: %llu\n", regs.orig_rax);
+}
+
 /**
  * Traces a given `pid`, logging all system calls.
  */
 int trace(pid_t pid) {
-	if (waitpid(pid, 0, 0) == -1) {
-		perror("waitpid");
-		return EX_OSERR;
-	}
-	if (ptrace(PTRACE_SETOPTIONS, pid, NULL, PTRACE_O_EXITKILL) == -1) {
-		perror("ptrace");
-		return EX_OSERR;
-	}
+	fprintf(stderr, "Tracing PID %d.\n", pid);
+	ASSERT(waitpid(pid, 0, 0));
+	ASSERT(ptrace(PTRACE_SETOPTIONS, pid, NULL, PTRACE_O_EXITKILL));
 	while (true) {
-		if (ptrace(PTRACE_SYSCALL, pid, NULL, 0) == -1) {
-			fprintf(stderr, "%d: ", pid);
-			perror("ptrace");
-			return EX_OSERR;
-		}
-		if (waitpid(pid, 0, 0) == -1) {
-			perror("waitpid");
-			return EX_OSERR;
+		ASSERT(ptrace(PTRACE_SYSCALL, pid, NULL, 0));
+		ASSERT(waitpid(pid, 0, 0));
+		// Registers mapped here: https://elixir.bootlin.com/linux/latest/source/arch/x86/include/asm/user_64.h#L69
+		struct user_regs_struct child_regs = {0};
+		ASSERT(ptrace(PTRACE_GETREGS, pid, NULL, &child_regs));
+		print_syscall(child_regs);
+		ASSERT(ptrace(PTRACE_SYSCALL, pid, NULL, 0));
+		ASSERT(waitpid(pid, 0, 0));
+		if (ptrace(PTRACE_GETREGS, pid, NULL, &child_regs) == -1) {
+			// The program probably exited.
+			return (int) child_regs.rdi;
 		}
 	}
 }
