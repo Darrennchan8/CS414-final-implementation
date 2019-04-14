@@ -1,5 +1,9 @@
 # Known output files
 cat
+hijack
+
+# vim
+*.swp
 
 # Prerequisites
 *.d
