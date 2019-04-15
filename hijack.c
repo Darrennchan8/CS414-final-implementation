@@ -6,15 +6,27 @@
 #include <unistd.h>
 
 #include <sys/ptrace.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/user.h>
 #include <sys/wait.h>
+
+#define DEBUG true
 
 #define ASSERT(expr) \
 	if (expr == -1) { \
 		perror(#expr); \
 		return EX_OSERR; \
 	}
+
+union value {
+	unsigned long long as_regvalue;
+	int as_int;
+	unsigned int as_uint;
+	unsigned long long as_ullong;
+	void* as_ptr;
+	char* as_string;
+};
 
 /**
  * Executes a `file` with `arguments`, with a `PTRACE_TRACEME` request.
@@ -29,7 +41,67 @@ int run(char* file, char** arguments) {
 }
 
 void print_syscall(struct user_regs_struct regs) {
-	printf("Syscall: %llu\n", regs.orig_rax);
+	unsigned long long syscall = regs.orig_rax;
+	union value arg1;
+	union value arg2;
+	union value arg3;
+	union value arg4;
+	union value arg5;
+	union value arg6;
+	arg1.as_regvalue = regs.rdi;
+	arg2.as_regvalue = regs.rsi;
+	arg3.as_regvalue = regs.rdx;
+	arg4.as_regvalue = regs.rcx;
+	arg5.as_regvalue = regs.r8;
+	arg6.as_regvalue = regs.r9;
+	switch (syscall) {
+		case SYS_open:
+			if (arg3.as_uint) {
+				// printf("open(\"%s\", %d, %o)\n", arg1.as_string, arg2.as_int, arg3.as_uint);
+				printf("open(%p, %d, %o)\n", arg1.as_ptr, arg2.as_int, arg3.as_uint);
+			} else {
+				// printf("open(\"%s\", %d)\n", arg1.as_string, arg2.as_int);
+				printf("open(%p, %d)\n", arg1.as_ptr, arg2.as_int);
+			}
+			break;
+		case SYS_openat:
+			if (arg4.as_uint) {
+				// printf("open(%d, \"%s\", %d, %o)\n", arg1.as_int, arg2.as_string, arg3.as_int, arg4.as_uint);
+				printf("open(%d, %p, %d, %o)\n", arg1.as_int, arg2.as_ptr, arg3.as_int, arg4.as_uint);
+			} else {
+				// printf("open(%d, \"%s\", %d)\n", arg1.as_int, arg2.as_string, arg3.as_int);
+				printf("open(%d, %p, %d)\n", arg1.as_int, arg2.as_ptr, arg3.as_int);
+			}
+			break;
+		case SYS_read:
+			printf("read(%d, %p, %llu)\n", arg1.as_int, arg2.as_ptr, arg3.as_ullong);
+			break;
+		case SYS_close:
+			printf("close(%d)\n", arg1.as_int);
+			break;
+		case SYS_chdir:
+			// printf("chdir(\"%s\")\n", arg1.as_string);
+			printf("chdir(%p)\n", arg1.as_ptr);
+			break;
+		case SYS_fchdir:
+			printf("fchdir(%d)\n", arg1.as_int);
+			break;
+		case SYS_stat:
+			// printf("stat(\"%s\", %p)\n", arg1.as_string, arg2.as_ptr);
+			printf("stat(%p, %p)\n", arg1.as_ptr, arg2.as_ptr);
+			break;
+		case SYS_fstat:
+			printf("fstat(%d, %p)\n", arg1.as_int, arg2.as_ptr);
+			break;
+		case SYS_lstat:
+			// printf("lstat(\"%s\", %p)\n", arg1.as_string, arg2.as_ptr);
+			printf("lstat(%p, %p)\n", arg1.as_ptr, arg2.as_ptr);
+			break;
+		default:
+			printf("%d|", SYS_open);
+			printf("Syscall: %llu\n", syscall);
+			break;
+	}
 }
 
 /**
