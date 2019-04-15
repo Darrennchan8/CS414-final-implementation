@@ -114,7 +114,7 @@ int trace(pid_t pid) {
 	while (true) {
 		ASSERT(ptrace(PTRACE_SYSCALL, pid, NULL, 0));
 		ASSERT(waitpid(pid, 0, 0));
-		// Registers mapped here: https://elixir.bootlin.com/linux/latest/source/arch/x86/include/asm/user_64.h#L69
+		// Registers mapped here: http://blog.rchapman.org/posts/Linux_System_Call_Table_for_x86_64/
 		struct user_regs_struct child_regs = {0};
 		ASSERT(ptrace(PTRACE_GETREGS, pid, NULL, &child_regs));
 		print_syscall(child_regs);
