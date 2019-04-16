@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,12 +7,13 @@
 #include <unistd.h>
 
 #include <sys/ptrace.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/user.h>
 #include <sys/wait.h>
 
-#define DEBUG true
+#define DEBUG false
 
 #define ASSERT(expr) \
 	if (expr == -1) { \
@@ -34,7 +36,31 @@ int run(char* file, char** arguments) {
 	return 0;
 }
 
-void print_syscall(regset *before, regset *after) {
+char* str_at(pid_t pid, regval start) {
+	size_t buff_size = 2;
+	char* result = malloc(buff_size);
+	while (true) {
+		long twoBytes = ptrace(PTRACE_PEEKDATA, pid, start + buff_size - 2, NULL);
+		char* twoChars = (char*) &twoBytes;
+		result[buff_size - 2] = twoChars[0];
+		result[buff_size - 1] = twoChars[1];
+		if (twoChars[0] == '\0' || twoChars[1] == '\0') {
+			break;
+		}
+		result = realloc(result, buff_size += 2);
+	}
+	return result;
+}
+
+void write_str(pid_t pid, regval start, char* value) {
+	int max = strlen(value);
+	for (int i = 0; i <= max; i += 2) {
+		long twoBytes = *(value + i) + (*(value + i + 1) << 8);
+		ptrace(PTRACE_POKEDATA, pid, start + i, twoBytes);
+	}
+}
+
+void print_syscall(pid_t pid, regset *before, regset *after) {
 	// http://6.035.scripts.mit.edu/sp17/x86-64-architecture-guide.html
 	regval syscall = before->orig_rax;
 	regval arg1 = before->rdi;
@@ -49,13 +75,13 @@ void print_syscall(regset *before, regset *after) {
 	// http://blog.rchapman.org/posts/Linux_System_Call_Table_for_x86_64/
 	switch (syscall) {
 		case SYS_open:
-			// lhs_format = arg3 ? "open(\"%s\", %d, %o)" : "open(\"%s\", %d)";
-			lhs_format = arg3 ? "open(%p, %d, %o)" : "open(%p, %d)";
+			arg1 = (regval) str_at(pid, arg1);
+			lhs_format = arg3 ? "open(\"%s\", %d, %o)" : "open(\"%s\", %d)";
 			rhs_format = "%d";
 			break;
 		case SYS_openat:
-			// lhs_format = arg4 ? "openat(%d, \"%s\", %d, %o)" : "open(%d, \"%s\", %d)";
-			lhs_format = arg4 ? "openat(%d, %p, %d, %o)" : "open(%d, %p, %d)";
+			arg2 = (regval) str_at(pid, arg2);
+			lhs_format = arg4 ? "openat(%d, \"%s\", %d, %o)" : "open(%d, \"%s\", %d)";
 			rhs_format = "%d";
 			break;
 		case SYS_read:
@@ -106,11 +132,30 @@ void print_syscall(regset *before, regset *after) {
 	}
 }
 
+void hijack(pid_t pid, regset *before) {
+	regval syscall = before->orig_rax;
+	regval arg1 = before->rdi;
+	regval arg2 = before->rsi;
+	if (syscall == SYS_open || syscall == SYS_openat) {
+		regval remote_filename = syscall == SYS_open ? arg1: arg2;
+		char *filename = str_at(pid, remote_filename);
+		char *end_search = "sample.txt";
+		char *end_replace = "fake.txt";
+		char *end = filename + strlen(filename) - strlen(end_search);
+		if (strcmp(end, end_search) == 0) {
+			strcpy(end, end_replace);
+			write_str(pid, remote_filename, filename);
+		}
+	}
+}
+
 /**
  * Traces a given `pid`, logging all system calls.
  */
 int trace(pid_t pid) {
-	fprintf(stderr, "Tracing PID %d.\n", pid);
+	if (DEBUG) {
+		fprintf(stderr, "Tracing PID %d.\n", pid);
+	}
 	ASSERT(waitpid(pid, 0, 0));
 	ASSERT(ptrace(PTRACE_SETOPTIONS, pid, NULL, PTRACE_O_EXITKILL));
 	while (true) {
@@ -119,10 +164,13 @@ int trace(pid_t pid) {
 		ASSERT(ptrace(PTRACE_SYSCALL, pid, NULL, 0));
 		ASSERT(waitpid(pid, 0, 0));
 		ASSERT(ptrace(PTRACE_GETREGS, pid, NULL, &regs_before));
+		hijack(pid, &regs_before);
 		ASSERT(ptrace(PTRACE_SYSCALL, pid, NULL, 0));
 		ASSERT(waitpid(pid, 0, 0));
 		bool programExit = ptrace(PTRACE_GETREGS, pid, NULL, &regs_after) == -1;
-		print_syscall(&regs_before, programExit ? NULL : &regs_after);
+		if (DEBUG) {
+			print_syscall(pid, &regs_before, programExit ? NULL : &regs_after);
+		}
 		if (programExit) {
 			// The program probably exited.
 			return (int) regs_before.rdi;
